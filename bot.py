@@ -22,6 +22,16 @@ users = db["users"]
 
 logging.basicConfig(level=logging.INFO)
 
+# /start command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Welcome to the Ranking Bot!\n\n"
+        "Use /leaderboard to see top users\n"
+        "Use /mypoints to check your score\n"
+        "Admins can use /award @username 10 to give points."
+    )
+
+# /award command (admin only)
 async def award(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ You are not authorized.")
@@ -46,6 +56,7 @@ async def award(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Awarded {points} pts to @{username}.")
 
+# /leaderboard command
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top = users.find().sort("points", -1).limit(10)
     msg = "🏆 Leaderboard:\n"
@@ -53,14 +64,17 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"{i}. @{u['username']} – {u['points']} pts\n"
     await update.message.reply_text(msg)
 
+# /mypoints command
 async def mypoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     user = users.find_one({"username": username})
     pts = user["points"] if user else 0
     await update.message.reply_text(f"🧮 @{username}, you have {pts} pts.")
 
+# Start the bot
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("award", award))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("mypoints", mypoints))
