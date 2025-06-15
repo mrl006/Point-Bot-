@@ -1,9 +1,11 @@
 import os
 import logging
+from datetime import datetime, timedelta
 from telegram import Update, ChatMember
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from pymongo import MongoClient
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 
@@ -19,52 +21,55 @@ ADMIN_ID = int(ADMIN_ID_STR)
 client = MongoClient(MONGO_URI, tls=True, tlsAllowInvalidCertificates=True)
 db = client["points_db"]
 users = db["users"]
+logs = db["logs"]
 
 logging.basicConfig(level=logging.INFO)
 
-# /start
+def get_badge(points):
+    if points >= 500:
+        return "🥇 Master"
+    elif points >= 100:
+        return "🥈 Intermediate"
+    elif points > 0:
+        return "🥉 Beginner"
+    else:
+        return "❌ Newbie"
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 <b>Welcome to Racking Bot!</b>\n\n"
-        "📊 Use <code>/leaderboard</code> to view the top scorers\n"
+        f"👋 <b>Welcome to Ranking Bot!</b>\n\n"
+        f"📍 Group: <b>{update.effective_chat.title or 'Private Chat'}</b>\n"
+        "📊 Use <code>/leaderboard</code> to view top scorers in this group\n"
         "🎯 Use <code>/mypoints</code> to check your score\n"
-        "🏅 Admins can use <code>/award @username 10</code> to give points",
+        "🏅 Admins: <code>/award</code>, <code>/reset</code>\n"
+        "🎁 Use <code>/daily</code> to claim your bonus!",
         parse_mode="HTML"
     )
 
-# /myid
 async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🆔 Your Telegram ID: <code>{update.effective_user.id}</code>",
         parse_mode="HTML"
     )
 
-# /award
 async def award(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
+    group_id = chat.id
+    group_name = chat.title or "Private"
 
     if chat.type in ["group", "supergroup"]:
         member: ChatMember = await context.bot.get_chat_member(chat.id, user.id)
         if member.status not in ["administrator", "creator"]:
-            await update.message.reply_text(
-                "🚫 <b>Access Denied:</b> Only group admins or the bot owner can use this command.",
-                parse_mode="HTML"
-            )
+            await update.message.reply_text("🚫 Only admins can use this.", parse_mode="HTML")
             return
     else:
         if user.id != ADMIN_ID:
-            await update.message.reply_text(
-                "🚫 <b>Access Denied:</b> Only the bot owner can use this command.",
-                parse_mode="HTML"
-            )
+            await update.message.reply_text("🚫 Not authorized.", parse_mode="HTML")
             return
 
     if len(context.args) != 2:
-        await update.message.reply_text(
-            "❗ <b>Usage:</b> <code>/award @username 10</code>",
-            parse_mode="HTML"
-        )
+        await update.message.reply_text("❗ Usage: <code>/award @user 10</code>", parse_mode="HTML")
         return
 
     username = context.args[0].lstrip("@")
@@ -74,57 +79,116 @@ async def award(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Points must be a number.", parse_mode="HTML")
         return
 
-    if not username:
-        await update.message.reply_text("❗ Username missing or invalid.", parse_mode="HTML")
-        return
+    users.update_one(
+        {"username": username, "group_id": group_id},
+        {"$inc": {"points": points}, "$set": {"group_name": group_name}},
+        upsert=True
+    )
 
-    user_doc = users.find_one({"username": username})
-    if not user_doc:
-        users.insert_one({"username": username, "points": points})
-    else:
-        users.update_one({"username": username}, {"$inc": {"points": points}})
+    logs.insert_one({
+        "giver": user.username,
+        "receiver": username,
+        "points": points,
+        "group_id": group_id,
+        "group_name": group_name,
+        "time": datetime.utcnow().isoformat()
+    })
 
     await update.message.reply_text(
-        f"✅ <b>+{points} pts</b> awarded to <b>@{username}</b>!",
+        f"✅ <b>@{username}</b> received <b>{points} pts</b> in <b>{group_name}</b>!",
         parse_mode="HTML"
     )
 
-# /leaderboard
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    top = list(users.find().sort("points", -1).limit(10))
-    if not top:
-        await update.message.reply_text("📉 No leaderboard data yet.")
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    group_id = chat.id
+
+    if chat.type in ["group", "supergroup"]:
+        member: ChatMember = await context.bot.get_chat_member(chat.id, user.id)
+        if member.status not in ["administrator", "creator"]:
+            await update.message.reply_text("🚫 Only admins can use this.", parse_mode="HTML")
+            return
+    else:
+        if user.id != ADMIN_ID:
+            await update.message.reply_text("🚫 Not authorized.", parse_mode="HTML")
+            return
+
+    if len(context.args) != 1:
+        await update.message.reply_text("❗ Usage: <code>/reset @user</code>", parse_mode="HTML")
         return
 
-    msg = "<b>🏆 Leaderboard:</b>\n\n"
+    username = context.args[0].lstrip("@")
+    users.update_one({"username": username, "group_id": group_id}, {"$set": {"points": 0}})
+    await update.message.reply_text(f"♻️ <b>@{username}</b>'s points reset to 0 in this group.", parse_mode="HTML")
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    group_id = chat.id
+    group_name = chat.title or "Private"
+
+    top = list(users.find({"group_id": group_id}).sort("points", -1).limit(10))
+    if not top:
+        await update.message.reply_text("📉 No leaderboard data for this group.")
+        return
+
+    msg = f"<b>🏆 Leaderboard – {group_name}:</b>\n\n"
     for i, u in enumerate(top, 1):
-        msg += f"{i}. @{u['username']} — <b>{u['points']} pts</b>\n"
+        badge = get_badge(u['points'])
+        msg += f"{i}. @{u['username']} — <b>{u['points']} pts</b> {badge}\n"
     await update.message.reply_text(msg, parse_mode="HTML")
 
-# /mypoints
 async def mypoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
+    group_id = update.effective_chat.id
+
     if not username:
-        await update.message.reply_text(
-            "⚠️ Please set a public @username in Telegram to track your score.",
-            parse_mode="HTML"
-        )
+        await update.message.reply_text("⚠️ Set a public @username to track points.", parse_mode="HTML")
         return
 
-    user_doc = users.find_one({"username": username})
-    pts = user_doc["points"] if user_doc else 0
+    doc = users.find_one({"username": username, "group_id": group_id})
+    pts = doc["points"] if doc else 0
+    badge = get_badge(pts)
+
     await update.message.reply_text(
-        f"📦 <b>@{username}</b>, you currently have <b>{pts} pts</b>.",
+        f"📦 <b>@{username}</b>\nPoints: <b>{pts}</b>\nBadge: {badge}",
         parse_mode="HTML"
     )
 
-# Start the bot
+async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    username = update.effective_user.username
+    group_id = update.effective_chat.id
+    group_name = update.effective_chat.title or "Private"
+
+    if not username:
+        await update.message.reply_text("⚠️ Set a @username first.", parse_mode="HTML")
+        return
+
+    doc = users.find_one({"username": username, "group_id": group_id})
+    now = datetime.utcnow()
+    if doc and "lastClaim" in doc:
+        last = datetime.fromisoformat(doc["lastClaim"])
+        if now - last < timedelta(hours=24):
+            await update.message.reply_text("🕒 You already claimed your daily bonus today.", parse_mode="HTML")
+            return
+
+    bonus = random.randint(10, 50)
+    users.update_one(
+        {"username": username, "group_id": group_id},
+        {"$inc": {"points": bonus}, "$set": {"lastClaim": now.isoformat(), "group_name": group_name}},
+        upsert=True
+    )
+
+    await update.message.reply_text(f"🎁 You claimed <b>{bonus} pts</b> today in this group!", parse_mode="HTML")
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("award", award))
+    app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("mypoints", mypoints))
+    app.add_handler(CommandHandler("daily", daily))
     print("Bot is running 🎯")
     app.run_polling()
