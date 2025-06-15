@@ -16,7 +16,8 @@ if not TOKEN or not MONGO_URI or not ADMIN_ID_STR:
 
 ADMIN_ID = int(ADMIN_ID_STR)
 
-client = MongoClient(MONGO_URI)
+# Fix SSL issue with MongoDB Atlas
+client = MongoClient(MONGO_URI, tls=True, tlsAllowInvalidCertificates=True)
 db = client["points_db"]
 users = db["users"]
 
@@ -31,6 +32,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Admins can use /award @username 10 to give points."
     )
 
+# /myid command to check your Telegram ID
+async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Your Telegram ID: {update.effective_user.id}")
+
 # /award command (admin only)
 async def award(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -44,8 +49,12 @@ async def award(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = context.args[0].lstrip("@")
     try:
         points = int(context.args[1])
-    except:
+    except ValueError:
         await update.message.reply_text("Points must be a number.")
+        return
+
+    if not username:
+        await update.message.reply_text("❗ Username missing or invalid.")
         return
 
     user = users.find_one({"username": username})
@@ -59,6 +68,10 @@ async def award(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /leaderboard command
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top = users.find().sort("points", -1).limit(10)
+    if top.count() == 0:
+        await update.message.reply_text("🏆 No users on the leaderboard yet.")
+        return
+
     msg = "🏆 Leaderboard:\n"
     for i, u in enumerate(top, 1):
         msg += f"{i}. @{u['username']} – {u['points']} pts\n"
@@ -67,6 +80,10 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /mypoints command
 async def mypoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
+    if not username:
+        await update.message.reply_text("❗ Please set a public @username in Telegram to track your score.")
+        return
+
     user = users.find_one({"username": username})
     pts = user["points"] if user else 0
     await update.message.reply_text(f"🧮 @{username}, you have {pts} pts.")
@@ -75,6 +92,7 @@ async def mypoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("award", award))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("mypoints", mypoints))
