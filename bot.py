@@ -8,8 +8,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
 MONGO_URI = os.getenv("MONGO_URI")
+ADMIN_ID_STR = os.getenv("ADMIN_ID")
+
+if not TOKEN or not MONGO_URI or not ADMIN_ID_STR:
+    raise ValueError("❌ Missing environment variables: BOT_TOKEN, MONGO_URI, or ADMIN_ID")
+
+ADMIN_ID = int(ADMIN_ID_STR)
 
 client = MongoClient(MONGO_URI)
 db = client["points_db"]
