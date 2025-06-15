@@ -1,6 +1,6 @@
 import os
 import logging
-from telegram import Update
+from telegram import Update, ChatMember
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from pymongo import MongoClient
 from dotenv import load_dotenv
@@ -16,77 +16,107 @@ if not TOKEN or not MONGO_URI or not ADMIN_ID_STR:
 
 ADMIN_ID = int(ADMIN_ID_STR)
 
-# Fix SSL issue with MongoDB Atlas
 client = MongoClient(MONGO_URI, tls=True, tlsAllowInvalidCertificates=True)
 db = client["points_db"]
 users = db["users"]
 
 logging.basicConfig(level=logging.INFO)
 
-# /start command
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Welcome to the Ranking Bot!\n\n"
-        "Use /leaderboard to see top users\n"
-        "Use /mypoints to check your score\n"
-        "Admins can use /award @username 10 to give points."
+        "👋 <b>Welcome to Racking Bot!</b>\n\n"
+        "📊 Use <code>/leaderboard</code> to view the top scorers\n"
+        "🎯 Use <code>/mypoints</code> to check your score\n"
+        "🏅 Admins can use <code>/award @username 10</code> to give points",
+        parse_mode="HTML"
     )
 
-# /myid command to check your Telegram ID
+# /myid
 async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Your Telegram ID: {update.effective_user.id}")
+    await update.message.reply_text(
+        f"🆔 Your Telegram ID: <code>{update.effective_user.id}</code>",
+        parse_mode="HTML"
+    )
 
-# /award command (admin only)
+# /award
 async def award(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ You are not authorized.")
-        return
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if chat.type in ["group", "supergroup"]:
+        member: ChatMember = await context.bot.get_chat_member(chat.id, user.id)
+        if member.status not in ["administrator", "creator"]:
+            await update.message.reply_text(
+                "🚫 <b>Access Denied:</b> Only group admins or the bot owner can use this command.",
+                parse_mode="HTML"
+            )
+            return
+    else:
+        if user.id != ADMIN_ID:
+            await update.message.reply_text(
+                "🚫 <b>Access Denied:</b> Only the bot owner can use this command.",
+                parse_mode="HTML"
+            )
+            return
 
     if len(context.args) != 2:
-        await update.message.reply_text("Usage: /award @username 10")
+        await update.message.reply_text(
+            "❗ <b>Usage:</b> <code>/award @username 10</code>",
+            parse_mode="HTML"
+        )
         return
 
     username = context.args[0].lstrip("@")
     try:
         points = int(context.args[1])
     except ValueError:
-        await update.message.reply_text("Points must be a number.")
+        await update.message.reply_text("⚠️ Points must be a number.", parse_mode="HTML")
         return
 
     if not username:
-        await update.message.reply_text("❗ Username missing or invalid.")
+        await update.message.reply_text("❗ Username missing or invalid.", parse_mode="HTML")
         return
 
-    user = users.find_one({"username": username})
-    if not user:
+    user_doc = users.find_one({"username": username})
+    if not user_doc:
         users.insert_one({"username": username, "points": points})
     else:
         users.update_one({"username": username}, {"$inc": {"points": points}})
 
-    await update.message.reply_text(f"✅ Awarded {points} pts to @{username}.")
+    await update.message.reply_text(
+        f"✅ <b>+{points} pts</b> awarded to <b>@{username}</b>!",
+        parse_mode="HTML"
+    )
 
-# /leaderboard command
+# /leaderboard
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    top = users.find().sort("points", -1).limit(10)
-    if top.count() == 0:
-        await update.message.reply_text("🏆 No users on the leaderboard yet.")
+    top = list(users.find().sort("points", -1).limit(10))
+    if not top:
+        await update.message.reply_text("📉 No leaderboard data yet.")
         return
 
-    msg = "🏆 Leaderboard:\n"
+    msg = "<b>🏆 Leaderboard:</b>\n\n"
     for i, u in enumerate(top, 1):
-        msg += f"{i}. @{u['username']} – {u['points']} pts\n"
-    await update.message.reply_text(msg)
+        msg += f"{i}. @{u['username']} — <b>{u['points']} pts</b>\n"
+    await update.message.reply_text(msg, parse_mode="HTML")
 
-# /mypoints command
+# /mypoints
 async def mypoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     if not username:
-        await update.message.reply_text("❗ Please set a public @username in Telegram to track your score.")
+        await update.message.reply_text(
+            "⚠️ Please set a public @username in Telegram to track your score.",
+            parse_mode="HTML"
+        )
         return
 
-    user = users.find_one({"username": username})
-    pts = user["points"] if user else 0
-    await update.message.reply_text(f"🧮 @{username}, you have {pts} pts.")
+    user_doc = users.find_one({"username": username})
+    pts = user_doc["points"] if user_doc else 0
+    await update.message.reply_text(
+        f"📦 <b>@{username}</b>, you currently have <b>{pts} pts</b>.",
+        parse_mode="HTML"
+    )
 
 # Start the bot
 if __name__ == "__main__":
